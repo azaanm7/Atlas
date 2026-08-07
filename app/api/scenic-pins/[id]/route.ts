@@ -1,0 +1,96 @@
+import { NextResponse } from "next/server";
+import { prisma } from "../../../../lib/prisma";
+import {
+  requireAuth,
+  requireRole,
+  jsonError,
+  ApiError,
+} from "../../../../lib/auth-helpers";
+import { destroyCloudinaryImages } from "../../../../lib/cloudinary";
+
+export async function GET(
+  _request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params;
+    const pin = await prisma.scenicPin.findUnique({
+      where: { id: Number(id) },
+      include: { aimag: true },
+    });
+    if (!pin) throw new ApiError(404, "Газар олдсонгүй");
+    return NextResponse.json(pin);
+  } catch (err) {
+    return jsonError(err);
+  }
+}
+
+export async function PATCH(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const user = await requireAuth(request);
+    requireRole(user, "admin");
+    const { id } = await params;
+    const { name, type, description, images, aimagId, lat, lng, googleMapUrl } =
+      await request.json();
+    if (
+      images !== undefined &&
+      (!Array.isArray(images) || images.length < 1 || images.length > 4)
+    ) {
+      return NextResponse.json(
+        { error: "Дор хаяж 1, хамгийн ихдээ 4 зураг оруулна уу" },
+        { status: 400 },
+      );
+    }
+    // `images` always arrives as the row's full final photo set (kept +
+    // newly-uploaded, see uploadImages in lib/userContent.ts) — whatever was
+    // in the old set but isn't in this one was just replaced/removed, so
+    // clean those up on Cloudinary instead of leaving them orphaned there.
+    const previous =
+      images !== undefined
+        ? await prisma.scenicPin.findUnique({
+            where: { id: Number(id) },
+            select: { images: true },
+          })
+        : null;
+    const pin = await prisma.scenicPin.update({
+      where: { id: Number(id) },
+      data: {
+        name,
+        type,
+        description,
+        images,
+        aimagId: aimagId != null ? Number(aimagId) : undefined,
+        lat: lat != null ? Number(lat) : undefined,
+        lng: lng != null ? Number(lng) : undefined,
+        googleMapUrl,
+      },
+      include: { aimag: true },
+    });
+    if (previous)
+      await destroyCloudinaryImages(
+        previous.images.filter((url) => !images.includes(url)),
+      );
+    return NextResponse.json(pin);
+  } catch (err) {
+    return jsonError(err);
+  }
+}
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const user = await requireAuth(request);
+    requireRole(user, "admin");
+    const { id } = await params;
+    const pin = await prisma.scenicPin.delete({ where: { id: Number(id) } });
+    await destroyCloudinaryImages(pin.images);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return jsonError(err);
+  }
+}
